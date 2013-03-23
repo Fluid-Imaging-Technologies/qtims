@@ -43,6 +43,11 @@ private:
 	bool haveUserImages();
 	bool createDiffImage();
 	bool getProcParams();
+	cv::Scalar randColor();
+
+	void thresholdImage();
+	void binarizeImage();
+	void findContours();
 
 	Ui::ImsClass ui;
 	QSettings *m_settings;

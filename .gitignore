@@ -25,5 +25,6 @@ GeneratedFiles/
 *.map
 !.gitignore
 *.sdf
+*.opensdf
 ipch/
 *.dat

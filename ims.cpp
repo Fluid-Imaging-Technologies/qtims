@@ -26,6 +26,9 @@ Ims::Ims(QWidget *parent, Qt::WFlags flags)
 	connect(ui.actionLoadBackground, SIGNAL(triggered()), SLOT(onLoadBackground()));
 	connect(ui.actionLoadImage, SIGNAL(triggered()), SLOT(onLoadRaw()));
 
+	// for consistency
+	qsrand(0);
+
 	restoreWindowState();
 }
 
@@ -54,12 +57,12 @@ void Ims::onViewClosed(QString windowName)
 	is->m_img.release();
 
 	if (is->m_status)
-		is->m_status->setText(is->m_name + ": <none>");		
+		is->m_status->setText(is->m_name + ": <none>");
 }
 
 void Ims::onLoadBackground()
 {
-	onLoad("Background");	
+	onLoad("Background");
 }
 
 void Ims::onLoadRaw()
@@ -70,7 +73,7 @@ void Ims::onLoadRaw()
 void Ims::onLoad(QString name)
 {
 	QString dir;
-	
+
 	ImageStore *is = m_store.value(name);
 
 	QString f = QFileDialog::getOpenFileName(this, is->m_name, is->m_dir, "Images (*.tif)");
@@ -114,16 +117,55 @@ void Ims::processImage()
 	if (!getProcParams())
 		return;
 
+	thresholdImage();
+	binarizeImage();
+	findContours();
+}
+
+void Ims::thresholdImage()
+{
 	ImageStore *raw = m_store.value("Raw");
 	ImageStore *background = m_store.value("Background");
 	ImageStore *diff = m_store.value("Diff");
-	ImageStore *binary = m_store.value("Binary");
 
 	cv::absdiff(background->m_img, raw->m_img, diff->m_img);
 	diff->m_view->setImage(diff->m_img);
+}
+
+void Ims::binarizeImage()
+{
+	ImageStore *diff = m_store.value("Diff");
+	ImageStore *binary = m_store.value("Binary");
 
 	cv::threshold(diff->m_img, binary->m_img, m_binThreshold, 255.0, CV_THRESH_BINARY);
 	binary->m_view->setImage(binary->m_img);
+}
+
+void Ims::findContours()
+{
+	cv::Mat binCopy;
+	std::vector<std::vector<cv::Point> > contourList;
+	std::vector<cv::Vec4i> hierarchy;
+
+	ImageStore *binary = m_store.value("Binary");
+	ImageStore *contour = m_store.value("Contour");
+
+	binCopy = binary->m_img.clone();
+
+	cv::findContours(binCopy, contourList, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_NONE, cv::Point(0, 0));
+
+	// clear the old image
+	contour->m_img = cv::Scalar(0.0, 0.0, 0.0);
+
+	for (int i = 0; i < contourList.size(); i++)
+		drawContours(contour->m_img, contourList, i, randColor(), 2, 8, hierarchy, 0, cv::Point());
+
+	contour->m_view->setImage(contour->m_img);
+}
+
+cv::Scalar Ims::randColor()
+{
+	return cv::Scalar(qrand() % 256, qrand() % 256, qrand() % 256);
 }
 
 bool Ims::createProcImages()
@@ -140,7 +182,7 @@ bool Ims::createProcImages()
 		diff->m_view = new ImgView(this, m_settings, diff->m_name);
 		diff->m_view->show();
 		connect(diff->m_view, SIGNAL(closed(QString)), this, SLOT(onViewClosed(QString)));
-		m_store.insert("Diff", diff);
+		m_store.insert(diff->m_name, diff);
 	}
 
 	ImageStore *binary = m_store.value("Binary", NULL);
@@ -150,7 +192,17 @@ bool Ims::createProcImages()
 		binary->m_view = new ImgView(this, m_settings, binary->m_name);
 		binary->m_view->show();
 		connect(binary->m_view, SIGNAL(closed(QString)), this, SLOT(onViewClosed(QString)));
-		m_store.insert("Binary", binary);
+		m_store.insert(binary->m_name, binary);
+	}
+
+	ImageStore *contour = m_store.value("Contour", NULL);
+	if (!contour) {
+		contour = new ImageStore("Contour");
+		contour->m_img.create(raw->m_img.rows, raw->m_img.cols, CV_8UC3);
+		contour->m_view = new ImgView(this, m_settings, contour->m_name);
+		contour->m_view->show();
+		connect(binary->m_view, SIGNAL(closed(QString)), this, SLOT(onViewClosed(QString)));
+		m_store.insert(contour->m_name, contour);
 	}
 
 	return true;
@@ -158,21 +210,40 @@ bool Ims::createProcImages()
 
 bool Ims::haveUserImages()
 {
-	ImageStore *is = m_store.value("Raw", NULL);
-	if (!is)
+	ImageStore *raw = m_store.value("Raw", NULL);
+	if (!raw || raw->m_img.empty())
 		return false;
 
-	if (is->m_img.empty())
+	ImageStore *background = m_store.value("Background", NULL);
+	if (!background || background->m_img.empty())
 		return false;
 
-	is = m_store.value("Background", NULL);
-	if (!is)
-		return false;
+	if (raw->m_img.type() != background->m_img.type()) {
+		if (CV_8UC3 == raw->m_img.type()) {
+			int rows = raw->m_img.rows;
+			int cols = raw->m_img.cols;
 
-	if (is->m_img.empty())
-		return false;
+			cv::Mat mat(rows, cols, raw->m_img.type());
 
-	return true;	
+			for (int i = 0; i < rows; i++) {
+				uchar *brow = background->m_img.ptr(i);
+
+				for (int j = 0; j < cols; j++) {
+					mat.at<cv::Vec3b>(i, j)[0] = brow[j];
+					mat.at<cv::Vec3b>(i, j)[1] = brow[j];
+					mat.at<cv::Vec3b>(i, j)[2] = brow[j];
+				}
+			}
+
+			background->m_img.release();
+			background->m_img = mat;
+
+			if (background->m_view)
+					background->m_view->setImage(background->m_img);
+		}
+	}
+
+	return true;
 }
 
 bool Ims::getProcParams()
